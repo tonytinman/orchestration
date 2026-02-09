@@ -1,0 +1,410 @@
+{
+	"name": "BatchOrchestrator",
+	"properties": {
+		"activities": [
+			{
+				"name": "Set Partition Date Variable",
+				"type": "SetVariable",
+				"dependsOn": [
+					{
+						"activity": "Environment Config",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"variableName": "PartitionDate",
+					"value": {
+						"value": "@formatDateTime(getPastTime(variables('PartitionDateOffset'),'Day'),'yyyy-MM-dd')",
+						"type": "Expression"
+					}
+				}
+			},
+			{
+				"name": "Initiate Data Load",
+				"type": "Lookup",
+				"dependsOn": [
+					{
+						"activity": "Set Partition Date Variable",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "0.12:00:00",
+					"retry": 0,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"source": {
+						"type": "AzureSqlSource",
+						"sqlReaderStoredProcedureName": "run.InitiateBatch",
+						"storedProcedureParameters": {
+							"BatchName": {
+								"type": "String",
+								"value": {
+									"value": "@pipeline().parameters.BatchName",
+									"type": "Expression"
+								}
+							},
+							"LoadName": {
+								"type": "String",
+								"value": {
+									"value": "@pipeline().parameters.LoadName",
+									"type": "Expression"
+								}
+							},
+							"PartitionDate": {
+								"type": "String",
+								"value": {
+									"value": "@variables('PartitionDate')",
+									"type": "Expression"
+								}
+							}
+						},
+						"queryTimeout": "02:00:00",
+						"partitionOption": "None"
+					},
+					"dataset": {
+						"referenceName": "ds_azuresql_generic",
+						"type": "DatasetReference",
+						"parameters": {
+							"p_sqlservername": {
+								"value": "@activity('Environment Config').output.pipelineReturnValue.Metadata_ServerName",
+								"type": "Expression"
+							},
+							"p_databasename": {
+								"value": "@activity('Environment Config').output.pipelineReturnValue.Metadata_DatabaseName",
+								"type": "Expression"
+							}
+						}
+					}
+				}
+			},
+			{
+				"name": "Set Load ID",
+				"type": "SetVariable",
+				"dependsOn": [
+					{
+						"activity": "Initiate Data Load",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"variableName": "LoadID",
+					"value": {
+						"value": "@activity('Initiate Data Load').output.firstRow.LoadID",
+						"type": "Expression"
+					}
+				}
+			},
+			{
+				"name": "Inititialise Process Queue",
+				"type": "SqlServerStoredProcedure",
+				"dependsOn": [
+					{
+						"activity": "Set Load ID",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "0.12:00:00",
+					"retry": 0,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"storedProcedureName": "run.InitialiseQueue",
+					"storedProcedureParameters": {
+						"LoadID": {
+							"value": {
+								"value": "@variables('LoadID')",
+								"type": "Expression"
+							},
+							"type": "Guid"
+						}
+					}
+				},
+				"linkedServiceName": {
+					"referenceName": "ls_AzureSqlDatabase",
+					"type": "LinkedServiceReference",
+					"parameters": {
+						"p_sqlserver": "@activity('Environment Config').output.pipelineReturnValue.Metadata_ServerName",
+						"p_databasename": "@activity('Environment Config').output.pipelineReturnValue.Metadata_DatabaseName"
+					}
+				}
+			},
+			{
+				"name": "Get Pending Items Flag",
+				"type": "Lookup",
+				"dependsOn": [
+					{
+						"activity": "Inititialise Process Queue",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "0.12:00:00",
+					"retry": 0,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"source": {
+						"type": "AzureSqlSource",
+						"sqlReaderStoredProcedureName": "run.IsQueuePending",
+						"storedProcedureParameters": {
+							"LoadID": {
+								"type": "Guid",
+								"value": {
+									"value": "@variables('LoadID')",
+									"type": "Expression"
+								}
+							}
+						},
+						"queryTimeout": "02:00:00",
+						"partitionOption": "None"
+					},
+					"dataset": {
+						"referenceName": "ds_azuresql_generic",
+						"type": "DatasetReference",
+						"parameters": {
+							"p_sqlservername": {
+								"value": "@activity('Environment Config').output.pipelineReturnValue.Metadata_ServerName",
+								"type": "Expression"
+							},
+							"p_databasename": {
+								"value": "@activity('Environment Config').output.pipelineReturnValue.Metadata_DatabaseName",
+								"type": "Expression"
+							}
+						}
+					}
+				}
+			},
+			{
+				"name": "Set Pending Items Variable",
+				"type": "SetVariable",
+				"dependsOn": [
+					{
+						"activity": "Get Pending Items Flag",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"variableName": "PendingItems",
+					"value": {
+						"value": "@greater(activity('Get Pending Items Flag').output.firstRow.IsPending, 0)\n\n",
+						"type": "Expression"
+					}
+				}
+			},
+			{
+				"name": "Until No More Pending Items",
+				"type": "Until",
+				"dependsOn": [
+					{
+						"activity": "Set Pending Items Variable",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"userProperties": [],
+				"typeProperties": {
+					"expression": {
+						"value": "@equals(variables('PendingItems'),false)",
+						"type": "Expression"
+					},
+					"activities": [
+						{
+							"name": "Process Pending Queue Items",
+							"type": "ExecutePipeline",
+							"dependsOn": [],
+							"policy": {
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"pipeline": {
+									"referenceName": "QueueExecutor",
+									"type": "PipelineReference"
+								},
+								"waitOnCompletion": true,
+								"parameters": {
+									"p_load_id": {
+										"value": "@variables('LoadID')",
+										"type": "Expression"
+									},
+									"p_load_date": {
+										"value": "@variables('PartitionDate')",
+										"type": "Expression"
+									},
+									"p_BatchName": {
+										"value": "@pipeline().parameters.BatchName",
+										"type": "Expression"
+									}
+								}
+							}
+						},
+						{
+							"name": "Set Pending Items Variable - loop internal",
+							"type": "SetVariable",
+							"dependsOn": [
+								{
+									"activity": "Check Pending Items",
+									"dependencyConditions": [
+										"Succeeded"
+									]
+								}
+							],
+							"policy": {
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"variableName": "PendingItems",
+								"value": {
+									"value": "@greater(activity('Check Pending Items').output.firstRow.IsPending, 0)\n\n",
+									"type": "Expression"
+								}
+							}
+						},
+						{
+							"name": "Check Pending Items",
+							"type": "Lookup",
+							"dependsOn": [
+								{
+									"activity": "Process Pending Queue Items",
+									"dependencyConditions": [
+										"Succeeded"
+									]
+								}
+							],
+							"policy": {
+								"timeout": "0.12:00:00",
+								"retry": 0,
+								"retryIntervalInSeconds": 30,
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"source": {
+									"type": "AzureSqlSource",
+									"sqlReaderStoredProcedureName": "run.IsQueuePending",
+									"storedProcedureParameters": {
+										"LoadID": {
+											"type": "Guid",
+											"value": {
+												"value": "@variables('LoadID')",
+												"type": "Expression"
+											}
+										}
+									},
+									"queryTimeout": "02:00:00",
+									"partitionOption": "None"
+								},
+								"dataset": {
+									"referenceName": "ds_azuresql_generic",
+									"type": "DatasetReference",
+									"parameters": {
+										"p_sqlservername": {
+											"value": "@activity('Environment Config').output.pipelineReturnValue.Metadata_ServerName",
+											"type": "Expression"
+										},
+										"p_databasename": {
+											"value": "@activity('Environment Config').output.pipelineReturnValue.Metadata_DatabaseName",
+											"type": "Expression"
+										}
+									}
+								}
+							}
+						}
+					],
+					"timeout": "0.12:00:00"
+				}
+			},
+			{
+				"name": "Environment Config",
+				"type": "ExecutePipeline",
+				"dependsOn": [],
+				"policy": {
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"pipeline": {
+						"referenceName": "SetEnviornmentConfig",
+						"type": "PipelineReference"
+					},
+					"waitOnCompletion": true
+				}
+			}
+		],
+		"parameters": {
+			"BatchName": {
+				"type": "string",
+				"defaultValue": "galahad_demo_batch"
+			},
+			"LoadName": {
+				"type": "string",
+				"defaultValue": "TestLoad1"
+			}
+		},
+		"variables": {
+			"PartitionDate": {
+				"type": "String",
+				"defaultValue": "2025/07/30"
+			},
+			"PartitionDateOffset": {
+				"type": "Integer",
+				"defaultValue": 1
+			},
+			"LoadID": {
+				"type": "String"
+			},
+			"PendingItems": {
+				"type": "Boolean"
+			}
+		},
+		"folder": {
+			"name": "Nova Framework/Orchestration Engine"
+		},
+		"annotations": [],
+		"lastPublishTime": "2026-01-05T15:17:36Z"
+	},
+	"type": "Microsoft.DataFactory/factories/pipelines"
+}
