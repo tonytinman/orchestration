@@ -1,0 +1,30 @@
+---
+name: '[quality-check]-$(Build.DefinitionName)_$(Date:yyyyMMdd)$(Rev:.r)'
+trigger: none
+
+pr:
+  branches:
+    include:
+      - 'main'
+
+pool:
+  vmImage: ubuntu-latest
+
+stages:
+- stage: validate
+  displayName: PR Checks (CSV validation)
+  jobs:
+  - job: run_validator
+    displayName: Validate orchestration metadata
+    steps:
+    - bash: |
+        set -euo pipefail
+        echo "Python version:"
+        python3 --version
+        python3 -m pip install --upgrade pip
+        pip install -r tools/validator/requirements.txt
+      displayName: Install Python requirements
+    - bash: |
+        set -euo pipefail
+        python3 tools/validator/validate_metadata.py --csv-dir orchestration-metadata
+      displayName: CSV Validate

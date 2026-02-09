@@ -1,0 +1,145 @@
+---
+name: '[${{ variables.environmentName }}] $(Build.DefinitionName)_$(Date:yyyyMMdd)$(Rev:.r)'
+trigger: none
+
+variables:
+  PROJECT_DIR: 'sql/nova_metadata'
+  DACPAC_PATH: '$(PROJECT_DIR)/bin/Release/nova_metadata.dacpac'
+
+  server: 'sql-edp-dev-nova-uks-01.database.windows.net'
+  database: 'CLUKNova_Meta_Dev'
+  serviceConnection: 'cluk-az-dev-azdo-databricks'
+
+stages:
+  - stage: dacpac_dryrun
+    displayName: DACPAC Dryrun
+    jobs:
+      - job: dryrun
+        displayName: DACPAC Dryrun
+        pool:
+          name: 'vmss-dev-ado-uks-01'
+        workspace:
+          clean: all
+        steps:
+          - task: UseDotNet@2
+            inputs: { packageType: 'sdk', version: '8.x' }
+
+          - script: dotnet build "$(PROJECT_DIR)" -c Release
+            displayName: Build DACPAC
+
+          - bash: |
+              set -euo pipefail
+              dotnet tool install -g microsoft.sqlpackage
+            displayName: Install sqlpackage
+
+          - bash: |
+              set -euo pipefail
+              ls -l "$(DACPAC_PATH)" || { echo "DACPAC not found: $(DACPAC_PATH)"; exit 1; }
+            displayName: Assert DACPAC exists
+
+          - task: AzureCLI@2
+            displayName: DACPAC Dryrun
+            inputs:
+              azureSubscription: $(serviceConnection)
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+
+                TOKEN=$(az account get-access-token --resource https://database.windows.net/ --query accessToken -o tsv)
+
+                sqlpackage /Action:DeployReport \
+                  /SourceFile:"$(DACPAC_PATH)" \
+                  /TargetServerName:"$(server)" \
+                  /TargetDatabaseName:"$(database)" \
+                  /AccessToken:$TOKEN \
+                  /p:DropObjectsNotInSource=true \
+                  /p:BlockOnPossibleDataLoss=true \
+                  /OutputPath:"$(PROJECT_DIR)"/deploy-report.xml
+
+                sqlpackage /Action:Script \
+                  /SourceFile:"$(DACPAC_PATH)" \
+                  /TargetServerName:"$(server)" \
+                  /TargetDatabaseName:"$(database)" \
+                  /AccessToken:$TOKEN \
+                  /p:DropObjectsNotInSource=true \
+                  /p:BlockOnPossibleDataLoss=true \
+                  /OutputPath:"$(PROJECT_DIR)"/deploy.sql
+
+          - bash: |
+              set -euo pipefail
+
+              CREATES=$(grep -E '^\s*CREATE\s' -ci "$(PROJECT_DIR)/deploy.sql" || true)
+              ALTERS=$(grep -E '^\s*ALTER\s'  -ci "$(PROJECT_DIR)/deploy.sql" || true)
+              DROPS=$(grep  -E '^\s*DROP\s'   -ci "$(PROJECT_DIR)/deploy.sql" || true)
+              {
+                echo "## DACPAC preview for $(database) @ $(server)";
+                echo "";
+                echo "- **Creates:** $CREATES   **Alters:** $ALTERS   **Drops:** $DROPS";
+                echo "";
+                echo "### First 150 lines of deploy.sql";
+                echo '```sql';
+                sed -n '1,150p' "$(PROJECT_DIR)/deploy.sql";
+                echo '```';
+              } > "$(PROJECT_DIR)/preview-summary.md"
+              cat "$(PROJECT_DIR)"/preview-summary.md
+            displayName: DACPAC Preview
+
+          - task: PublishPipelineArtifact@1
+            displayName: Publish DACPAC artifacts
+            inputs:
+              targetPath: '$(DACPAC_PATH)'
+              artifactName: 'dacpac_preview'
+
+  - stage: dacpac_publish
+    displayName: Publish DACPAC
+    dependsOn: dacpac_dryrun
+    jobs:
+      - deployment: deploy
+        displayName: Publish DACPAC
+        pool:
+          name: 'vmss-dev-ado-uks-01'
+        environment: 'dev_framework'
+        workspace:
+          clean: all
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: UseDotNet@2
+                  inputs: { packageType: 'sdk', version: '8.x' }
+
+                - bash: |
+                    set -euo pipefail
+                    dotnet tool install -g microsoft.sqlpackage
+                  displayName: Install sqlpackage
+
+                - task: DownloadPipelineArtifact@2
+                  displayName: Download DACPAC Artifact
+                  inputs:
+                    artifact: 'dacpac_preview'
+                    path: '$(PROJECT_DIR)/bin/Release/'
+
+                - bash: |
+                    set -euo pipefail
+                    ls -l "$(DACPAC_PATH)" || { echo "DACPAC not found: $(DACPAC_PATH)"; exit 1; }
+                  displayName: Assert DACPAC exists
+
+                - task: AzureCLI@2
+                  displayName: Publish DACPAC
+                  inputs:
+                    azureSubscription: $(serviceConnection)
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      set -euo pipefail
+
+                      TOKEN=$(az account get-access-token --resource https://database.windows.net/ --query accessToken -o tsv)
+
+                      sqlpackage /Action:Publish \
+                        /SourceFile:"$(DACPAC_PATH)" \
+                        /TargetServerName:"$(server)" \
+                        /TargetDatabaseName:"$(database)" \
+                        /AccessToken:$TOKEN \
+                        /p:DropObjectsNotInSource=false \
+                        /p:BlockOnPossibleDataLoss=true \
