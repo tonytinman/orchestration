@@ -1,0 +1,611 @@
+{
+	"name": "ProcessExecutor",
+	"properties": {
+		"activities": [
+			{
+				"name": "Add Dependencies",
+				"type": "SqlServerStoredProcedure",
+				"dependsOn": [
+					{
+						"activity": "Process Type",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "0.12:00:00",
+					"retry": 0,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"storedProcedureName": "[run].[AddDependenciesToQueue]",
+					"storedProcedureParameters": {
+						"QueueID": {
+							"value": {
+								"value": "@pipeline().parameters.p_queue_id",
+								"type": "Expression"
+							},
+							"type": "Int32"
+						}
+					}
+				},
+				"linkedServiceName": {
+					"referenceName": "ls_AzureSqlDatabase",
+					"type": "LinkedServiceReference",
+					"parameters": {
+						"p_sqlserver": "@activity('Environment Config').output.pipelineReturnValue.Metadata_ServerName",
+						"p_databasename": "@activity('Environment Config').output.pipelineReturnValue.Metadata_DatabaseName"
+					}
+				}
+			},
+			{
+				"name": "Finalise Process",
+				"type": "SqlServerStoredProcedure",
+				"dependsOn": [
+					{
+						"activity": "Process Type",
+						"dependencyConditions": [
+							"Completed"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "0.12:00:00",
+					"retry": 0,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"storedProcedureName": "[run].[ProcessFinalise]",
+					"storedProcedureParameters": {
+						"QueueID": {
+							"value": {
+								"value": "@pipeline().parameters.p_queue_id",
+								"type": "Expression"
+							},
+							"type": "Int32"
+						},
+						"status": {
+							"value": {
+								"value": "@variables('_FinaliseProcessStatus')",
+								"type": "Expression"
+							},
+							"type": "String"
+						},
+						"ProcessAuditData": {
+							"value": {
+								"value": "@variables('_ProcessAuditData')",
+								"type": "Expression"
+							},
+							"type": "String"
+						}
+					}
+				},
+				"linkedServiceName": {
+					"referenceName": "ls_AzureSqlDatabase",
+					"type": "LinkedServiceReference",
+					"parameters": {
+						"p_sqlserver": "@activity('Environment Config').output.pipelineReturnValue.Metadata_ServerName",
+						"p_databasename": "@activity('Environment Config').output.pipelineReturnValue.Metadata_DatabaseName"
+					}
+				}
+			},
+			{
+				"name": "Start Process",
+				"type": "SqlServerStoredProcedure",
+				"dependsOn": [
+					{
+						"activity": "Environment Config",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "0.12:00:00",
+					"retry": 0,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"storedProcedureName": "[run].[StartProcess]",
+					"storedProcedureParameters": {
+						"QueueID": {
+							"value": {
+								"value": "@pipeline().parameters.p_queue_id",
+								"type": "Expression"
+							},
+							"type": "Int32"
+						}
+					}
+				},
+				"linkedServiceName": {
+					"referenceName": "ls_AzureSqlDatabase",
+					"type": "LinkedServiceReference",
+					"parameters": {
+						"p_sqlserver": "@activity('Environment Config').output.pipelineReturnValue.Metadata_ServerName",
+						"p_databasename": "@activity('Environment Config').output.pipelineReturnValue.Metadata_DatabaseName"
+					}
+				}
+			},
+			{
+				"name": "Process Type",
+				"type": "Switch",
+				"dependsOn": [
+					{
+						"activity": "Get Process Metadata",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"userProperties": [],
+				"typeProperties": {
+					"on": {
+						"value": "@if(\n  equals(\n    toUpper(activity('Get Process Metadata').output.firstRow.ProcessType),\n    'EXTRACT'\n  ),\n  'EXTRACT',\n  if(\n    or(\n      equals(\n        toUpper(activity('Get Process Metadata').output.firstRow.ProcessType),\n        'INGEST'\n      ),\n      equals(\n        toUpper(activity('Get Process Metadata').output.firstRow.ProcessType),\n        'TRANSFORM'\n      )\n    ),\n    'DATABRICKS',\n    toUpper(activity('Get Process Metadata').output.firstRow.ProcessType)\n  )\n)\n",
+						"type": "Expression"
+					},
+					"cases": [
+						{
+							"value": "EXTRACT",
+							"activities": [
+								{
+									"name": "Extract Controller",
+									"type": "ExecutePipeline",
+									"dependsOn": [],
+									"policy": {
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"pipeline": {
+											"referenceName": "ExtractController",
+											"type": "PipelineReference"
+										},
+										"waitOnCompletion": true,
+										"parameters": {
+											"p_contract_storageaccountname": {
+												"value": "@activity('Environment Config').output.pipelineReturnValue.DataContract_StorageName",
+												"type": "Expression"
+											},
+											"p_contract_container": {
+												"value": "@activity('Environment Config').output.pipelineReturnValue.DataContract_Container",
+												"type": "Expression"
+											},
+											"p_contract_directory": {
+												"value": "@activity('Environment Config').output.pipelineReturnValue.DataContract_Dir",
+												"type": "Expression"
+											},
+											"p_contract_filename": {
+												"value": "@activity('Get Process Metadata').output.firstRow.ProcessContract",
+												"type": "Expression"
+											},
+											"p_src_tbl_schema": {
+												"value": "@split(activity('Get Process Metadata').output.firstRow.ProcessName, '.')[0]",
+												"type": "Expression"
+											},
+											"p_src_tbl_name": {
+												"value": "@split(activity('Get Process Metadata').output.firstRow.ProcessName, '.')[1]",
+												"type": "Expression"
+											}
+										}
+									}
+								},
+								{
+									"name": "Set ProcessAuditData",
+									"type": "SetVariable",
+									"dependsOn": [
+										{
+											"activity": "Extract Controller",
+											"dependencyConditions": [
+												"Succeeded"
+											]
+										}
+									],
+									"policy": {
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"variableName": "_ProcessAuditData",
+										"value": {
+											"value": "@activity('Extract Controller').output.pipelineReturnValue.ProcessAuditData",
+											"type": "Expression"
+										}
+									}
+								},
+								{
+									"name": "Set EXTRACT-ADF SUCCESS",
+									"type": "SetVariable",
+									"dependsOn": [
+										{
+											"activity": "Extract Controller",
+											"dependencyConditions": [
+												"Succeeded"
+											]
+										}
+									],
+									"policy": {
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"variableName": "_FinaliseProcessStatus",
+										"value": "SUCCESS"
+									}
+								},
+								{
+									"name": "Set EXTRACT-ADF FAILED",
+									"type": "SetVariable",
+									"dependsOn": [
+										{
+											"activity": "Extract Controller",
+											"dependencyConditions": [
+												"Failed"
+											]
+										}
+									],
+									"policy": {
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"variableName": "_FinaliseProcessStatus",
+										"value": "FAILED"
+									}
+								}
+							]
+						},
+						{
+							"value": "DATABRICKS",
+							"activities": [
+								{
+									"name": "Get IngestProcessConfig",
+									"type": "Lookup",
+									"dependsOn": [],
+									"policy": {
+										"timeout": "0.12:00:00",
+										"retry": 0,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"source": {
+											"type": "AzureSqlSource",
+											"sqlReaderStoredProcedureName": "[run].[GetIngestProcessConfig]",
+											"storedProcedureParameters": {
+												"QueueID": {
+													"type": "Int32",
+													"value": {
+														"value": "@pipeline().parameters.p_queue_id",
+														"type": "Expression"
+													}
+												}
+											},
+											"queryTimeout": "02:00:00",
+											"partitionOption": "None"
+										},
+										"dataset": {
+											"referenceName": "ds_azuresql_generic",
+											"type": "DatasetReference",
+											"parameters": {
+												"p_sqlservername": {
+													"value": "@activity('Environment Config').output.pipelineReturnValue.Metadata_ServerName",
+													"type": "Expression"
+												},
+												"p_databasename": {
+													"value": "@activity('Environment Config').output.pipelineReturnValue.Metadata_DatabaseName",
+													"type": "Expression"
+												}
+											}
+										}
+									}
+								},
+								{
+									"name": "Set DATABRICKS SUCCESS",
+									"type": "SetVariable",
+									"dependsOn": [
+										{
+											"activity": "Execute Databricks Job",
+											"dependencyConditions": [
+												"Succeeded"
+											]
+										}
+									],
+									"policy": {
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"variableName": "_FinaliseProcessStatus",
+										"value": "SUCCESS"
+									}
+								},
+								{
+									"name": "Set DATABRICKS FAILED",
+									"type": "SetVariable",
+									"dependsOn": [
+										{
+											"activity": "Execute Databricks Job",
+											"dependencyConditions": [
+												"Failed"
+											]
+										}
+									],
+									"policy": {
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"variableName": "_FinaliseProcessStatus",
+										"value": "FAILED"
+									}
+								},
+								{
+									"name": "Set ProcessAuditData after Execute Databricks Job",
+									"type": "SetVariable",
+									"dependsOn": [
+										{
+											"activity": "Execute Databricks Job",
+											"dependencyConditions": [
+												"Completed"
+											]
+										}
+									],
+									"policy": {
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"variableName": "_ProcessAuditData",
+										"value": {
+											"value": "@string(\njson(\nconcat(\n'{\"runPageUrl\":\"'\n, activity('Execute Databricks Job').output.runPageUrl\n, '\"}'\n)))",
+											"type": "Expression"
+										}
+									}
+								},
+								{
+									"name": "Execute GetDatabricksJobID",
+									"type": "ExecutePipeline",
+									"dependsOn": [
+										{
+											"activity": "Get IngestProcessConfig",
+											"dependencyConditions": [
+												"Succeeded"
+											]
+										}
+									],
+									"policy": {
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"pipeline": {
+											"referenceName": "GetDatabricksJobID",
+											"type": "PipelineReference"
+										},
+										"waitOnCompletion": true,
+										"parameters": {
+											"p_job_name": {
+												"value": "@activity('Get IngestProcessConfig').output.firstRow.NotebookName",
+												"type": "Expression"
+											},
+											"p_creator_user_name": {
+												"value": "@activity('Environment Config').output.pipelineReturnValue.ADB_Service_Principal_ID",
+												"type": "Expression"
+											},
+											"p_ADB_WorkspaceURL": {
+												"value": "@activity('Environment Config').output.pipelineReturnValue.ADB_WorkspaceURL",
+												"type": "Expression"
+											}
+										}
+									}
+								},
+								{
+									"name": "Execute Databricks Job",
+									"type": "DatabricksJob",
+									"dependsOn": [
+										{
+											"activity": "Execute GetDatabricksJobID",
+											"dependencyConditions": [
+												"Succeeded"
+											]
+										}
+									],
+									"policy": {
+										"timeout": "0.12:00:00",
+										"retry": 0,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"jobId": {
+											"value": "@activity('Execute GetDatabricksJobID').output.pipelineReturnValue.actualJobID",
+											"type": "Expression"
+										},
+										"jobParameters": {
+											"data_contract_name": {
+												"value": "@activity('Get IngestProcessConfig').output.firstRow.Contract",
+												"type": "Expression"
+											},
+											"env": {
+												"value": "@activity('Environment Config').output.pipelineReturnValue.Environment",
+												"type": "Expression"
+											},
+											"process_queue_id": {
+												"value": "@string(activity('Get IngestProcessConfig').output.firstRow.QueueID)",
+												"type": "Expression"
+											},
+											"source_ref": {
+												"value": "@json(activity('Get IngestProcessConfig').output.firstRow.ProcessAuditData).source_ref",
+												"type": "Expression"
+											},
+											"batch_name": {
+												"value": "@pipeline().parameters.p_BatchName",
+												"type": "Expression"
+											},
+											"load_date": {
+												"value": "@activity('Get IngestProcessConfig').output.firstRow.LoadDate",
+												"type": "Expression"
+											},
+											"process_group_name": {
+												"value": "@activity('Get IngestProcessConfig').output.firstRow.ProcessGroupName",
+												"type": "Expression"
+											},
+											"cluster_id": {
+												"value": "@activity('Get IngestProcessConfig').output.firstRow.cluster_id",
+												"type": "Expression"
+											}
+										}
+									},
+									"linkedServiceName": {
+										"referenceName": "ls_NovaFlow_AzureDatabricks",
+										"type": "LinkedServiceReference",
+										"parameters": {
+											"DatabricksWorkspaceURL": "@activity('Environment Config').output.pipelineReturnValue.ADB_WorkspaceURL",
+											"DatabricksWorkspaceResourceID": "@activity('Environment Config').output.pipelineReturnValue.ADB_ResourceId",
+											"ExistingClusterID": "@activity('Get IngestProcessConfig').output.firstRow.cluster_id"
+										}
+									}
+								}
+							]
+						}
+					]
+				}
+			},
+			{
+				"name": "Environment Config",
+				"type": "ExecutePipeline",
+				"dependsOn": [],
+				"policy": {
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"pipeline": {
+						"referenceName": "SetEnviornmentConfig",
+						"type": "PipelineReference"
+					},
+					"waitOnCompletion": true
+				}
+			},
+			{
+				"name": "Get Process Metadata",
+				"type": "Lookup",
+				"dependsOn": [
+					{
+						"activity": "Start Process",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "0.12:00:00",
+					"retry": 0,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"source": {
+						"type": "AzureSqlSource",
+						"sqlReaderStoredProcedureName": "[run].[GetProcessMetadata]",
+						"storedProcedureParameters": {
+							"QueueID": {
+								"type": "Int32",
+								"value": {
+									"value": "@pipeline().parameters.p_queue_id",
+									"type": "Expression"
+								}
+							},
+							"LoadID": {
+								"type": "String",
+								"value": {
+									"value": "@pipeline().parameters.p_load_id",
+									"type": "Expression"
+								}
+							}
+						},
+						"queryTimeout": "02:00:00",
+						"partitionOption": "None"
+					},
+					"dataset": {
+						"referenceName": "ds_azuresql_generic",
+						"type": "DatasetReference",
+						"parameters": {
+							"p_sqlservername": {
+								"value": "@activity('Environment Config').output.pipelineReturnValue.Metadata_ServerName",
+								"type": "Expression"
+							},
+							"p_databasename": {
+								"value": "@activity('Environment Config').output.pipelineReturnValue.Metadata_DatabaseName",
+								"type": "Expression"
+							}
+						}
+					}
+				}
+			}
+		],
+		"parameters": {
+			"p_queue_id": {
+				"type": "int",
+				"defaultValue": 37
+			},
+			"p_load_id": {
+				"type": "string",
+				"defaultValue": "D5E30220-B86E-4E23-8C43-31FDA8051ABC"
+			},
+			"p_load_date": {
+				"type": "string",
+				"defaultValue": "2026-02-06"
+			},
+			"p_switch_log": {
+				"type": "bool",
+				"defaultValue": false
+			},
+			"p_BatchName": {
+				"type": "string",
+				"defaultValue": "galahad_demo_batch"
+			}
+		},
+		"variables": {
+			"_____container": {
+				"type": "String"
+			},
+			"_ProcessAuditData": {
+				"type": "String",
+				"defaultValue": "UNKNOWN/EMPTY"
+			},
+			"_FinaliseProcessStatus": {
+				"type": "String",
+				"defaultValue": "UNKNOWN/EMPTY"
+			}
+		},
+		"folder": {
+			"name": "Nova Framework/Orchestration Engine"
+		},
+		"annotations": [],
+		"lastPublishTime": "2026-01-05T15:17:34Z"
+	},
+	"type": "Microsoft.DataFactory/factories/pipelines"
+}
