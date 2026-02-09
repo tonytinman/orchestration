@@ -1,0 +1,209 @@
+trigger:
+- main
+
+pool:
+  name: 'vmss-dev-ado-uks-01'
+
+variables:
+  SqlServer: 'sql-edp-dev-nova-uks-01.database.windows.net'
+  SqlDatabase: 'CLUKNova_Meta_Dev'
+  environmentName: 'dev' 
+  serviceConnection: 'cluk-az-dev-azdo-databricks'
+
+  # Stored procedure to trigger after all loads complete
+  PostLoadStoredProc: 'stg.RebuildConfig'
+
+steps:
+- checkout: self
+
+- task: AzureCLI@2
+  displayName: 'Load CSVs to Azure SQL DB (AAD Auth) and Execute Post-Load SP'
+  inputs:
+    azureSubscription: $(serviceConnection) 
+    scriptType: pscore
+    scriptLocation: inlineScript
+    inlineScript: |
+      # ---- Configuration: Map CSV files to target tables ----
+      $mappings = @(
+        @{ File = "$(Build.SourcesDirectory)\orchestration-metadata\process.csv"; Table = "stg.Process" },
+        @{ File = "$(Build.SourcesDirectory)\orchestration-metadata\processDAG.csv"; Table = "stg.ProcessDAG" },
+        @{ File = "$(Build.SourcesDirectory)\orchestration-metadata\ADBCluster.csv"; Table = "stg.ADBCluster" }
+      )
+  
+      # ---- AAD Authentication Connection String ----
+      # (Modified to use Azure DevOps service connection + access token auth)
+      # Service connection name (for logging only):
+      Write-Host "Using Azure DevOps service connection: $(serviceConnection)"
+      # Acquire access token for Azure SQL (expects prior 'az login' from the ADO task using the service connection)
+      $global:AccessToken = az account get-access-token --resource https://database.windows.net --query accessToken -o tsv
+  
+      # Connection string without credentials; token-based auth is applied on the SqlConnection
+      $cs = "Server=$(SqlServer);Database=$(SqlDatabase);Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;"
+  
+      Write-Host "Using AAD authentication via service connection: $(serviceConnection)"
+      Write-Host "Target SQL Server: $(SqlServer)"
+      Write-Host "Target Database: $(SqlDatabase)"
+  
+      # ---- Add required assembly ----
+      Add-Type -AssemblyName System.Data
+  
+      # ---- Function: Execute non-query SQL ----
+      function Exec-NonQuery($connStr, $sql) {
+        try {
+          $conn = New-Object System.Data.SqlClient.SqlConnection($connStr)
+          # Attach the AAD access token obtained via the service connection
+          if ($global:AccessToken) { $conn.AccessToken = $global:AccessToken }
+          $cmd  = $conn.CreateCommand()
+          $cmd.CommandTimeout = 600
+          $cmd.CommandText = $sql
+          $conn.Open()
+          $result = $cmd.ExecuteNonQuery()
+          $conn.Close()
+          return $result
+        }
+        catch {
+          if ($conn.State -eq 'Open') { $conn.Close() }
+          throw "SQL execution failed: $_"
+        }
+      }
+  
+      # ---- Function: Import CSV to SQL Table ----
+      function Import-CsvToTable($connStr, $csvPath, $tableName, $delimiter=',') {
+        if (!(Test-Path $csvPath)) {
+          throw "File not found: $csvPath"
+        }
+  
+        Write-Host "  Reading CSV file: $csvPath"
+       
+        # Read CSV and infer columns from header
+        $rows = Import-Csv -Path $csvPath -Delimiter $delimiter
+       
+        if ($rows.Count -eq 0) {
+          Write-Host "  Warning: No rows in $csvPath - skipping"
+          return
+        }
+  
+        Write-Host "  Found $($rows.Count) rows to import"
+  
+        # Create DataTable and define columns
+        $dt = New-Object System.Data.DataTable
+        $headers = $rows[0].PSObject.Properties.Name
+       
+        foreach ($h in $headers) {
+          [void]$dt.Columns.Add($h)
+        }
+  
+        Write-Host "  Columns: $($headers -join ', ')"
+  
+        # Populate DataTable
+        foreach ($r in $rows) {
+          $dr = $dt.NewRow()
+          foreach ($h in $headers) {
+            $dr[$h] = $r.$h
+          }
+          $dt.Rows.Add($dr) | Out-Null
+        }
+  
+        # Bulk insert using SqlBulkCopy
+        try {
+          $conn = New-Object System.Data.SqlClient.SqlConnection($connStr)
+          # Attach the AAD access token obtained via the service connection
+          if ($global:AccessToken) { $conn.AccessToken = $global:AccessToken }
+          $bulk = New-Object System.Data.SqlClient.SqlBulkCopy($conn)
+          $bulk.DestinationTableName = $tableName
+          $bulk.BulkCopyTimeout = 0
+          $bulk.BatchSize = 10000
+         
+          # Map CSV columns to SQL table columns
+          foreach ($h in $headers) {
+            $null = $bulk.ColumnMappings.Add($h, $h)
+          }
+  
+          $conn.Open()
+          $bulk.WriteToServer($dt)
+          $conn.Close()
+         
+          Write-Host "  Successfully loaded $($rows.Count) rows into $tableName"
+        }
+        catch {
+          if ($conn.State -eq 'Open') { $conn.Close() }
+          throw "Bulk insert failed for $tableName : $_"
+        }
+      }
+  
+      # ---- Main execution ----
+      $errorOccurred = $false
+      $loadedTables = @()
+  
+      Write-Host "`n========================================" -ForegroundColor Cyan
+      Write-Host "Starting CSV data load process" -ForegroundColor Cyan
+      Write-Host "========================================`n" -ForegroundColor Cyan
+  
+      foreach ($m in $mappings) {
+        $table = $m.Table
+        $file  = $m.File
+       
+        try {
+          Write-Host "`nProcessing table: $table" -ForegroundColor Yellow
+         
+          # Truncate table with correct schema resolution
+          $parts = $table -split '\.'
+          if ($parts.Count -ne 2) { throw "Invalid table format: $table" }
+          $schema = $parts[0]
+          $tbl = $parts[1]
+          Write-Host "  Truncating table $schema.$tbl..."
+          Exec-NonQuery $cs "TRUNCATE TABLE [$schema].[$tbl];"
+          Write-Host "  Table truncated successfully" -ForegroundColor Green
+         
+          # Load CSV data
+          Write-Host "  Loading data from $file..."
+          Import-CsvToTable $cs $file $table ','
+          Write-Host "  Load completed successfully" -ForegroundColor Green
+         
+          $loadedTables += "$schema.$tbl"
+        }
+        catch {
+          Write-Host "  ERROR processing $table : $_" -ForegroundColor Red
+          $errorOccurred = $true
+          # Continue with other tables even if one fails
+        }
+      }
+  
+      # ---- Trigger post-load stored procedure ----
+      if (-not $errorOccurred) {
+        Write-Host "`n========================================" -ForegroundColor Cyan
+        Write-Host "All tables loaded successfully" -ForegroundColor Green
+        Write-Host "Loaded tables: $($loadedTables -join ', ')" -ForegroundColor Green
+        Write-Host "========================================`n" -ForegroundColor Cyan
+       
+        try {
+          Write-Host "Executing post-load stored procedure: $(PostLoadStoredProc)..."
+          $sp = "$(PostLoadStoredProc)"
+          $spParts = $sp -split '\.', 2
+          if ($spParts.Count -ne 2) { throw "Invalid PostLoadStoredProc format: $sp" }
+          $env = "$(environmentName)"
+          $result = Exec-NonQuery $cs "EXEC [$($spParts[0])].[$($spParts[1])] @Environment = '$env';"
+          Write-Host "Stored procedure executed successfully" -ForegroundColor Green
+          Write-Host "Rows affected: $result" -ForegroundColor Green
+        }
+        catch {
+          Write-Host "ERROR executing stored procedure: $_" -ForegroundColor Red
+          $errorOccurred = $true
+        }
+      }
+      else {
+        Write-Host "`n========================================" -ForegroundColor Red
+        Write-Host "ERRORS occurred during table loads" -ForegroundColor Red
+        Write-Host "Skipping post-load stored procedure" -ForegroundColor Red
+        Write-Host "========================================`n" -ForegroundColor Red
+      }
+
+      # ---- Exit with appropriate code ----
+      if ($errorOccurred) {
+        Write-Host "`nPipeline failed - see errors above" -ForegroundColor Red
+        exit 1
+      }
+      else {
+        Write-Host "`nPipeline completed successfully" -ForegroundColor Green
+        exit 0
+      }
