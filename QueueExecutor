@@ -1,0 +1,149 @@
+{
+	"name": "QueueExecutor",
+	"properties": {
+		"activities": [
+			{
+				"name": "Get Pending Items",
+				"type": "Lookup",
+				"dependsOn": [
+					{
+						"activity": "Environment Config",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "0.12:00:00",
+					"retry": 0,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"source": {
+						"type": "AzureSqlSource",
+						"sqlReaderStoredProcedureName": "run.GetPendingItems",
+						"storedProcedureParameters": {
+							"LoadID": {
+								"type": "Guid",
+								"value": {
+									"value": "@pipeline().parameters.p_load_id",
+									"type": "Expression"
+								}
+							}
+						},
+						"queryTimeout": "02:00:00",
+						"partitionOption": "None"
+					},
+					"dataset": {
+						"referenceName": "ds_azuresql_generic",
+						"type": "DatasetReference",
+						"parameters": {
+							"p_sqlservername": {
+								"value": "@activity('Environment Config').output.pipelineReturnValue.Metadata_ServerName",
+								"type": "Expression"
+							},
+							"p_databasename": {
+								"value": "@activity('Environment Config').output.pipelineReturnValue.Metadata_DatabaseName",
+								"type": "Expression"
+							}
+						}
+					},
+					"firstRowOnly": false
+				}
+			},
+			{
+				"name": "ForEachItem",
+				"type": "ForEach",
+				"dependsOn": [
+					{
+						"activity": "Get Pending Items",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"userProperties": [],
+				"typeProperties": {
+					"items": {
+						"value": "@activity('Get Pending Items').output.value",
+						"type": "Expression"
+					},
+					"isSequential": false,
+					"activities": [
+						{
+							"name": "Execute Process",
+							"type": "ExecutePipeline",
+							"dependsOn": [],
+							"policy": {
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"pipeline": {
+									"referenceName": "ProcessExecutor",
+									"type": "PipelineReference"
+								},
+								"waitOnCompletion": true,
+								"parameters": {
+									"p_queue_id": {
+										"value": "@item().QueueID",
+										"type": "Expression"
+									},
+									"p_load_id": {
+										"value": "@pipeline().parameters.p_load_id",
+										"type": "Expression"
+									},
+									"p_load_date": {
+										"value": "@pipeline().parameters.p_load_date",
+										"type": "Expression"
+									},
+									"p_BatchName": {
+										"value": "@pipeline().parameters.p_BatchName",
+										"type": "Expression"
+									}
+								}
+							}
+						}
+					]
+				}
+			},
+			{
+				"name": "Environment Config",
+				"type": "ExecutePipeline",
+				"dependsOn": [],
+				"policy": {
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"pipeline": {
+						"referenceName": "SetEnviornmentConfig",
+						"type": "PipelineReference"
+					},
+					"waitOnCompletion": true
+				}
+			}
+		],
+		"parameters": {
+			"p_load_id": {
+				"type": "string",
+				"defaultValue": "A9530B90-4BEA-4CCC-A0A0-6D1E192C1100"
+			},
+			"p_load_date": {
+				"type": "string"
+			},
+			"p_BatchName": {
+				"type": "string"
+			}
+		},
+		"folder": {
+			"name": "Nova Framework/Orchestration Engine"
+		},
+		"annotations": [],
+		"lastPublishTime": "2026-01-05T15:17:35Z"
+	},
+	"type": "Microsoft.DataFactory/factories/pipelines"
+}
