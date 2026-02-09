@@ -1,0 +1,261 @@
+{
+	"name": "ExtractController",
+	"properties": {
+		"activities": [
+			{
+				"name": "Environment Config",
+				"type": "ExecutePipeline",
+				"dependsOn": [],
+				"policy": {
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"pipeline": {
+						"referenceName": "SetEnviornmentConfig",
+						"type": "PipelineReference"
+					},
+					"waitOnCompletion": true
+				}
+			},
+			{
+				"name": "Get Data Contract Config",
+				"type": "ExecutePipeline",
+				"dependsOn": [
+					{
+						"activity": "Environment Config",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"pipeline": {
+						"referenceName": "GetExtractContractConfig",
+						"type": "PipelineReference"
+					},
+					"waitOnCompletion": true,
+					"parameters": {
+						"p_storageaccountname": {
+							"value": "@pipeline().parameters.p_contract_storageaccountname",
+							"type": "Expression"
+						},
+						"p_container": {
+							"value": "@pipeline().parameters.p_contract_container",
+							"type": "Expression"
+						},
+						"p_directory": {
+							"value": "@pipeline().parameters.p_contract_directory",
+							"type": "Expression"
+						},
+						"p_filename": {
+							"value": "@pipeline().parameters.p_contract_filename",
+							"type": "Expression"
+						}
+					}
+				}
+			},
+			{
+				"name": "Extract Type",
+				"type": "Switch",
+				"dependsOn": [
+					{
+						"activity": "Get Data Contract Config",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"userProperties": [],
+				"typeProperties": {
+					"on": {
+						"value": "@toUpper(activity('Get Data Contract Config').output.pipelineReturnValue.system_provider)",
+						"type": "Expression"
+					},
+					"cases": [
+						{
+							"value": "ORACLE",
+							"activities": [
+								{
+									"name": "Execute ExtractOracle2Blob",
+									"type": "ExecutePipeline",
+									"dependsOn": [],
+									"policy": {
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"pipeline": {
+											"referenceName": "ExtractOracleToNova",
+											"type": "PipelineReference"
+										},
+										"waitOnCompletion": true,
+										"parameters": {
+											"p_vault_uri": {
+												"value": "@activity('Get Data Contract Config').output.pipelineReturnValue.vault_uri",
+												"type": "Expression"
+											},
+											"p_client_secret": {
+												"value": "@activity('Get Data Contract Config').output.pipelineReturnValue.client_secret",
+												"type": "Expression"
+											},
+											"p_server": {
+												"value": "@activity('Get Data Contract Config').output.pipelineReturnValue.server",
+												"type": "Expression"
+											},
+											"p_user": {
+												"value": "@activity('Get Data Contract Config').output.pipelineReturnValue.user",
+												"type": "Expression"
+											},
+											"p_database": {
+												"value": "@activity('Get Data Contract Config').output.pipelineReturnValue.database",
+												"type": "Expression"
+											},
+											"p_port": {
+												"value": "@activity('Get Data Contract Config').output.pipelineReturnValue.port",
+												"type": "Expression"
+											},
+											"p_serviceName": {
+												"value": "@activity('Get Data Contract Config').output.pipelineReturnValue.serviceName",
+												"type": "Expression"
+											},
+											"p_src_schema": {
+												"value": "@pipeline().parameters.p_src_tbl_schema",
+												"type": "Expression"
+											},
+											"p_src_table": {
+												"value": "@pipeline().parameters.p_src_tbl_name",
+												"type": "Expression"
+											},
+											"p_sink_container": {
+												"value": "@activity('Get Data Contract Config').output.pipelineReturnValue.container",
+												"type": "Expression"
+											},
+											"p_sink_source_ref": {
+												"value": "@activity('Get Data Contract Config').output.pipelineReturnValue.source_ref",
+												"type": "Expression"
+											},
+											"p_sink_storageAccountName": {
+												"value": "@activity('Get Data Contract Config').output.pipelineReturnValue.storage_account_name",
+												"type": "Expression"
+											},
+											"p_sink_partition_type": {
+												"value": "@activity('Get Data Contract Config').output.pipelineReturnValue.partition_type",
+												"type": "Expression"
+											},
+											"p_sink_partition_column": {
+												"value": "@activity('Get Data Contract Config').output.pipelineReturnValue.partition_column",
+												"type": "Expression"
+											}
+										}
+									}
+								},
+								{
+									"name": "Set ProcessAuditData",
+									"type": "SetVariable",
+									"dependsOn": [
+										{
+											"activity": "Execute ExtractOracle2Blob",
+											"dependencyConditions": [
+												"Succeeded"
+											]
+										}
+									],
+									"policy": {
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"variableName": "_ProcessAuditData",
+										"value": {
+											"value": "@activity('Execute ExtractOracle2Blob').output.pipelineReturnValue.ProcessAuditData",
+											"type": "Expression"
+										}
+									}
+								}
+							]
+						}
+					]
+				}
+			},
+			{
+				"name": "Set Return Variable",
+				"type": "SetVariable",
+				"dependsOn": [
+					{
+						"activity": "Extract Type",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"variableName": "pipelineReturnValue",
+					"value": [
+						{
+							"key": "ProcessAuditData",
+							"value": {
+								"type": "Expression",
+								"content": "@variables('_ProcessAuditData')"
+							}
+						}
+					],
+					"setSystemVariable": true
+				}
+			}
+		],
+		"parameters": {
+			"p_contract_storageaccountname": {
+				"type": "string",
+				"defaultValue": "stnovadevadbuks01"
+			},
+			"p_contract_container": {
+				"type": "string",
+				"defaultValue": "data-contracts"
+			},
+			"p_contract_directory": {
+				"type": "string",
+				"defaultValue": "test"
+			},
+			"p_contract_filename": {
+				"type": "string",
+				"defaultValue": "extract.galahad"
+			},
+			"p_src_tbl_schema": {
+				"type": "string",
+				"defaultValue": "QUOLIVE_MANAGER"
+			},
+			"p_src_tbl_name": {
+				"type": "string",
+				"defaultValue": "INDUSTRY_TYPE"
+			}
+		},
+		"variables": {
+			"_audit_json": {
+				"type": "String"
+			},
+			"_infer_contract_type": {
+				"type": "String"
+			},
+			"_ProcessAuditData": {
+				"type": "String"
+			}
+		},
+		"folder": {
+			"name": "Nova Framework/Process Library/Extraction"
+		},
+		"annotations": [],
+		"lastPublishTime": "2026-01-05T15:17:34Z"
+	},
+	"type": "Microsoft.DataFactory/factories/pipelines"
+}
