@@ -375,7 +375,7 @@
 									"typeProperties": {
 										"variableName": "_ProcessAuditData",
 										"value": {
-											"value": "@string(\njson(\nconcat(\n'{\"runPageUrl\":\"'\n, activity('Execute Databricks Job').output.runPageUrl\n, '\"}'\n)))",
+											"value": "@string(\njson(\nconcat(\n'{\"runPageUrl\":\"'\n, activity('Execute Databricks Job').output.runPageUrl\n, '\",\"rows_written\":\"'\n, activity('Execute Databricks Job').output.runOutput.rows_written\n, '\"}'\n)))",
 											"type": "Expression"
 										}
 									}
