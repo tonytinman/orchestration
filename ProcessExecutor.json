@@ -473,6 +473,10 @@
 											"cluster_id": {
 												"value": "@activity('Get IngestProcessConfig').output.firstRow.cluster_id",
 												"type": "Expression"
+											},
+											"process_sub_type": {
+												"value": "@activity('Get IngestProcessConfig').output.firstRow.ProcessSubType",
+												"type": "Expression"
 											}
 										}
 									},
